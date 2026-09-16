@@ -1,4 +1,4 @@
-name: ZIP Round Trip Test
+name: Round Trip Text Test
 
 on:
   push:
@@ -8,26 +8,20 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Inspect ZIP
+      - uses: actions/checkout@v4
+      - name: Verify source
         run: |
-          mkdir extracted
-          unzip -q transfer-test/Buy_and_Sell_V11.29_Source_Snippet_GitHub_Test.zip -d extracted
-          echo "=== FILES IN ZIP ==="
-          find extracted -type f -print | sort
-          echo "=== ZIP CONTENTS ==="
-          unzip -l transfer-test/Buy_and_Sell_V11.29_Source_Snippet_GitHub_Test.zip
-
-      - name: Package extracted source
+          test -s test-source.txt
+          grep -q "BUY & SELL GITHUB ROUND-TRIP TEST" test-source.txt
+          cat test-source.txt
+      - name: Package source
         run: |
-          cd extracted
-          zip -qr ../roundtrip-source.zip .
-
-      - name: Upload round-trip artifact
+          mkdir out
+          cp test-source.txt out/
+          zip -q roundtrip-source.zip out/test-source.txt
+      - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: roundtrip-source
+          name: roundtrip-source-text
           path: roundtrip-source.zip
           archive: false

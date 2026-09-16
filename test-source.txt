@@ -1,0 +1,2 @@
+BUY & SELL GITHUB ROUND-TRIP TEST
+This is a harmless test file used only to prove that GitHub can store source text, run GitHub Actions, package the source, and return an artifact to Fred.
