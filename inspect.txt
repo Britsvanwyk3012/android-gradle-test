@@ -1,0 +1,814 @@
+            orientation = LinearLayout.VERTICAL
+            setPadding(28, 12, 28, 28)
+        }
+
+        val outer = ScrollView(this).apply {
+            isFillViewport = true
+            addView(root)
+        }
+
+        val title = TextView(this).apply {
+            text = "CLIENT CAPTURE — V12.04"
+            textSize = 21f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setPadding(dp(4), dp(8), dp(4), dp(8))
+            maxLines = 2
+            includeFontPadding = true
+        }
+        root.addView(title, matchWrap())
+
+        addSpace(root, 18)
+        root.addView(label("Client name"))
+        firstNameField = field("First name")
+        val nameRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        nameRow.addView(firstNameField, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(nameRow, matchWrap())
+
+        surnameField = field("Surname (optional)")
+        root.addView(surnameField, matchWrap())
+
+        addSpace(root, 6)
+        val controlRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        listToggleButton = makeButton("HIDE LIST")
+        listToggleButton.visibility = View.GONE
+        listToggleButton.setOnClickListener {
+            // The button label represents the action available to the user.
+            // In selected-contact mode, contactAreaHidden is false while the
+            // button intentionally says RETRIEVE LIST, so using contactAreaHidden
+            // alone caused the first tap to hide the list instead of retrieving it.
+            val retrieveRequested = listToggleButton.text.toString() == "RETRIEVE LIST"
+            if (retrieveRequested) {
+                contactAreaHidden = false
+                listToggleButton.text = "HIDE LIST"
+                clearButton.visibility = View.VISIBLE
+                if (selectedContact != null) {
+                    renderResultsFromCacheWithSelectedContact()
+                } else {
+                    matchingContactsLabel.visibility = View.VISIBLE
+                    resultsScroll.visibility = View.VISIBLE
+                }
+            } else {
+                contactAreaHidden = true
+                listToggleButton.text = "RETRIEVE LIST"
+                resultsScroll.visibility = View.GONE
+                matchingContactsLabel.visibility = View.GONE
+            }
+        }
+        controlRow.addView(listToggleButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        contactReferenceToggleButton = makeButton("RETRIEVE CONTACT")
+        contactReferenceToggleButton.visibility = View.GONE
+        contactReferenceToggleButton.setOnClickListener {
+            selectedReferenceHidden = false
+            contactReferenceToggleButton.visibility = View.GONE
+            if (selectedContact != null && !contactAreaHidden) renderSelectedOnlyResult()
+        }
+        controlRow.addView(contactReferenceToggleButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(controlRow, matchWrap())
+
+        addSpace(root, 8)
+        matchingContactsLabel = label("Matching phone Contacts")
+        matchingContactsLabel.visibility = View.GONE
+        root.addView(matchingContactsLabel)
+        resultsScroll = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            isFillViewport = false
+            visibility = View.GONE
+            // Do not trap the outer page scroll when the user's finger starts on a card.
+            isNestedScrollingEnabled = false
+        }
+        resultsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+    private fun refreshContactResults() {
+        if (isFinishing) return
+        val first = firstNameField.text.toString().trim()
+        val surname = surnameField.text.toString().trim()
+        val query = "$first $surname".trim()
+        if (query.isBlank() || allContacts.isEmpty()) {
+            resultsContainer.removeAllViews()
+            resultsScroll.visibility = View.GONE
+            matchingContactsLabel.visibility = View.GONE
+            listToggleButton.visibility = View.GONE
+            if (selectedContact == null) clearButton.visibility = View.GONE
+            return
+        }
+
+        val q = normalize(query)
+        val firstNorm = normalize(first)
+        val surnameNorm = normalize(surname)
+        val matches = allContacts.asSequence()
+            .filter { contact ->
+                if (selectedContact != null) contact.id == selectedContact!!.id
+                else {
+                    val name = normalize(contact.displayName)
+                    name.contains(q) || (firstNorm.isNotBlank() && name.contains(firstNorm))
+                }
+            }
+            .sortedWith(compareByDescending<PhoneContact> { exactScore(it, firstNorm, surnameNorm) }
+                .thenBy { normalize(it.displayName) })
+            .take(10)
+            .toList()
+
+        if (selectedContact == null) cachedContactMatches = matches
+        resultsContainer.removeAllViews()
+        if (matches.isEmpty()) {
+            resultsScroll.visibility = View.GONE
+            matchingContactsLabel.visibility = View.GONE
+            listToggleButton.visibility = View.GONE
+            if (selectedContact == null) clearButton.visibility = View.GONE
+            return
+        }
+        listToggleButton.visibility = View.VISIBLE
+        clearButton.visibility = View.VISIBLE
+        matchingContactsLabel.visibility = if (contactAreaHidden || selectedReferenceHidden) View.GONE else View.VISIBLE
+        resultsScroll.visibility = if (contactAreaHidden || selectedReferenceHidden) View.GONE else View.VISIBLE
+        matches.forEach { addContactRow(it, it.id == expandedContactId) }
+        if (selectedContact == null) {
+            listToggleButton.text = if (contactAreaHidden) "RETRIEVE LIST" else "HIDE LIST"
+            if (!contactAreaHidden) showStatus("${matches.size} matching Contacts available — select one deliberately.")
+        }
+    }
+
+    private fun renderSelectedOnlyResult() {
+        resultsContainer.removeAllViews()
+        val contact = selectedContact ?: return
+        if (selectedReferenceHidden || contactAreaHidden) {
+            resultsScroll.visibility = View.GONE
+            matchingContactsLabel.visibility = View.GONE
+            return
+        }
+        expandedContactId = contact.id
+        resultsScroll.visibility = View.VISIBLE
+        matchingContactsLabel.visibility = View.VISIBLE
+        addContactRow(contact, true)
+        listToggleButton.text = "RETRIEVE LIST"
+        listToggleButton.visibility = View.VISIBLE
+    }
+
+    private fun renderResultsFromCacheWithSelectedContact() {
+        resultsContainer.removeAllViews()
+        if (selectedReferenceHidden || contactAreaHidden) {
+            resultsScroll.visibility = View.GONE
+            matchingContactsLabel.visibility = View.GONE
+            return
+        }
+        val selected = selectedContact
+        val items = cachedContactMatches.ifEmpty { selected?.let { listOf(it) } ?: emptyList() }
+        if (items.isEmpty()) { resultsScroll.visibility = View.GONE; matchingContactsLabel.visibility = View.GONE; listToggleButton.visibility = View.GONE; return }
+        resultsScroll.visibility = View.VISIBLE
+        matchingContactsLabel.visibility = View.VISIBLE
+        listToggleButton.visibility = View.VISIBLE
+        items.forEach { addContactRow(it, it.id == selected?.id || it.id == expandedContactId) }
+        listToggleButton.text = "HIDE LIST"
+    }
+
+    private fun exactScore(c: PhoneContact, first: String, surname: String): Int {
+        val name = normalize(c.displayName)
+        if (first.isNotBlank() && surname.isNotBlank()) {
+            val exact = normalize("$first $surname")
+            if (name == exact) return 1000
+            if (name.startsWith(exact)) return 900
+        }
+        if (first.isNotBlank() && name == first) return 800
+        if (first.isNotBlank() && name.startsWith(first)) return 700
+        if (first.isNotBlank() && name.contains(first)) return 500
+        return 0
+    }
+
+    private fun contactForDisplay(contact: PhoneContact): PhoneContact {
+        val local = clientDb.getClientByPhoneContactId(contact.id.toString()) ?: return contact
+        val localPhones = clientDb.getPhonesJsonByPhoneContactId(contact.id.toString())
+        val parsedPhones = try {
+            val a = JSONArray(localPhones)
+            List(a.length()) { i ->
+                val o = a.getJSONObject(i)
+                PhoneEntry(o.optString("number"), o.optString("label").ifBlank { "New" })
+            }
+        } catch (_: Exception) { emptyList() }
+        val phones = if (parsedPhones.isNotEmpty() || localPhones == "[]") {
+            if (parsedPhones.isNotEmpty()) parsedPhones else buildList {
+                if (local.mainPhone.isNotBlank()) add(PhoneEntry(local.mainPhone, "New"))
+                if (local.additionalPhone.isNotBlank()) add(PhoneEntry(local.additionalPhone, local.additionalPhoneLabel.ifBlank { "Cell phone" }))
+                if (local.whatsapp.isNotBlank() && local.whatsapp != local.mainPhone && local.whatsapp != local.additionalPhone) add(PhoneEntry(local.whatsapp, "WhatsApp"))
+            }
+        } else parsedPhones
+        return contact.copy(
+            displayName = if (local.surname.isBlank()) local.identifyingName else "${local.identifyingName} ${local.surname}",
+            givenName = local.identifyingName,
+            familyName = local.surname,
+            phones = phones,
+            note = contact.note
+        )
+    }
+
+    private fun detectExternalPhoneChanges(contact: PhoneContact) {
+        val local = clientDb.getClientByPhoneContactId(contact.id.toString()) ?: return
+        val localPhones = parsePhonesJson(clientDb.getPhonesJson(local.id))
+        val localNumbers = localPhones.map { normalizePhone(it.number) }.filter { it.isNotBlank() }.toSet()
+        val candidates = contact.phones.filter { entry ->
+            val key = normalizePhone(entry.number)
+            key.isNotBlank() && !localNumbers.contains(key) && !ignoredExternalPhoneKeys.contains("${local.id}:$key")
+        }
+        if (candidates.isEmpty()) return
+        showExternalPhoneChangeDialog(local, contact, candidates.first())
+    }
+
+    private fun showExternalPhoneChangeDialog(local: ClientRecord, contact: PhoneContact, detected: PhoneEntry) {
+        val key = "${local.id}:${normalizePhone(detected.number)}"
+        val message = "${detected.label.ifBlank { "New number" }}  ${detected.number}\n\nThis number exists in Phone/Google Contacts but is not in the Buy & Sell database.\n\nChoose what Buy & Sell should do."
+        val options = arrayOf("ADD TO B&S", "ADD AS NEW NUMBER", "REPLACE CURRENT", "IGNORE")
+        val dialogBody = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(8), dp(24), dp(8))
+            addView(TextView(this@MainActivity).apply { text = message; textSize = 16f })
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("NEW NUMBER DETECTED")
+            .setView(dialogBody)
+            .setNegativeButton("CANCEL", null)
+            .create()
+        fun actionButton(text: String, action: () -> Unit) {
+            dialogBody.addView(Button(this).apply {
+                this.text = text
+                isAllCaps = false
+                setOnClickListener { dialog.dismiss(); action() }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        actionButton("ADD TO B&S") { applyExternalPhoneDecision(local, contact, detected, detected.label.ifBlank { "New" }, null) }
+        actionButton("ADD AS NEW NUMBER") { applyExternalPhoneDecision(local, contact, detected, "New", null) }
+        actionButton("REPLACE CURRENT") { showReplaceExternalPhoneDialog(local, contact, detected) }
+        actionButton("IGNORE") { ignoredExternalPhoneKeys.add(key) }
+        dialog.show()
+    }
+
+    private fun showReplaceExternalPhoneDialog(local: ClientRecord, contact: PhoneContact, detected: PhoneEntry) {
+        val current = parsePhonesJson(clientDb.getPhonesJson(local.id))
+            .filter { it.number.isNotBlank() }
+        if (current.isEmpty()) {
+            applyExternalPhoneDecision(local, contact, detected, detected.label.ifBlank { "New" }, null)
+            return
+        }
+        val labels = current.mapIndexed { index, phone ->
+            "${index + 1}. ${phone.number} — ${phone.label}"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("REPLACE WHICH NUMBER?")
+            .setItems(labels) { _, which ->
+                applyExternalPhoneDecision(local, contact, detected, detected.label.ifBlank { "New" }, which)
+            }
+            .setNegativeButton("CANCEL", null)
+            .show()
+    }
+
+    private fun applyExternalPhoneDecision(local: ClientRecord, contact: PhoneContact, detected: PhoneEntry, label: String, replaceIndex: Int?) {
+        val phones = parsePhonesJson(clientDb.getPhonesJson(local.id)).map { EditablePhone(it.number, it.label) }.toMutableList()
+        if (replaceIndex != null && replaceIndex in phones.indices) {
+            phones[replaceIndex] = EditablePhone(detected.number.trim(), label)
+        } else {
+            phones.add(EditablePhone(detected.number.trim(), label))
+        }
+        val json = JSONArray().apply { phones.forEach { put(JSONObject().apply { put("number", it.number.trim()); put("label", it.label.ifBlank { "New" }) }) } }.toString()
+        if (!clientDb.updatePhonesJsonOnly(local.id, json)) {
+            showStatus("External number was detected, but Buy & Sell could not update its local database.")
+                    typeface = Typeface.DEFAULT_BOLD
+                    setPadding(dp(52), dp(8), dp(8), dp(2))
+                }, matchWrap())
+                displayContact.phones.drop(3).forEachIndexed { index, entry ->
+                    card.addView(TextView(this).apply {
+                        text = "${index + 4}. ${entry.number} — ${entry.label}"
+                        textSize = 15f
+                        setPadding(dp(52), 0, dp(8), 2)
+                    }, matchWrap())
+                }
+            }
+            if (displayContact.givenName.isNotBlank() || displayContact.familyName.isNotBlank()) {
+                card.addView(TextView(this).apply {
+                    text = "Structured name: ${displayContact.givenName.ifBlank { "—" }}${if (displayContact.familyName.isNotBlank()) " | Surname: ${displayContact.familyName}" else ""}"
+                    textSize = 13f
+                    setPadding(dp(52), dp(6), dp(8), dp(2))
+                }, matchWrap())
+            }
+            if (displayContact.note.isNotBlank()) {
+                card.addView(TextView(this).apply {
+                    text = "Phone Contact Notes (read-only):\n${displayContact.note}"
+                    textSize = 13f
+                    setPadding(dp(52), dp(6), dp(8), dp(6))
+                }, matchWrap())
+            }
+            val editButton = makeButton("EDIT")
+            editButton.setOnClickListener { showClientEditScreen(contact) }
+            card.addView(editButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(dp(52), dp(10), dp(8), dp(4))
+            })
+            card.addView(TextView(this).apply {
+                text = "ⓘ  Client Edit opens the full contact maintenance screen."
+                textSize = 13f
+                setPadding(dp(52), dp(4), dp(8), dp(8))
+            }, matchWrap())
+        }
+        resultsContainer.addView(card, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(0,0,0,dp(6)) })
+    }
+
+
+    private data class EditablePhone(var number: String, var label: String)
+    private data class ClientEditState(val name: String, val surname: String, val phones: List<EditablePhone>)
+
+    private fun snapshotEditState() {
+        editUndoStack.add(ClientEditState(editWorkingName, editWorkingSurname, editWorkingPhones.map { EditablePhone(it.number, it.label) }))
+        if (editUndoStack.size > 5) editUndoStack.removeAt(0)
+        updateEditUndoButton()
+    }
+
+    private fun updateEditUndoButton() {
+        // The actual button is held by the edit screen closure via the view tag.
+        val undo = window.decorView.findViewWithTag<Button>("V12_EDIT_UNDO")
+        undo?.isEnabled = editUndoStack.isNotEmpty()
+        undo?.alpha = if (editUndoStack.isNotEmpty()) 1f else 0.45f
+    }
+
+    private fun keepFocusedFieldVisible(scroll: ScrollView, view: View) {
+        view.post {
+            val bottom = view.bottom + dp(24)
+            val visibleBottom = scroll.height
+            if (bottom > visibleBottom) scroll.smoothScrollBy(0, bottom - visibleBottom)
+        }
+    }
+
+    private fun showClientEditScreen(contact: PhoneContact) {
+        editOriginalContact = contact
+        val currentLocal = clientDb.getClientByPhoneContactId(contact.id.toString())
+        val currentDisplay = contactForDisplay(contact)
+        editWorkingName = currentLocal?.identifyingName ?: currentDisplay.givenName.ifBlank { currentDisplay.displayName }
+        editWorkingSurname = currentLocal?.surname ?: currentDisplay.familyName
+        editWorkingPhones = currentDisplay.phones.map { EditablePhone(it.number, it.label) }.toMutableList()
+        if (editWorkingPhones.isEmpty()) editWorkingPhones.add(EditablePhone("", "New"))
+        editInitialName = editWorkingName
+        editInitialSurname = editWorkingSurname
+        editInitialPhones = editWorkingPhones.map { EditablePhone(it.number, it.label) }
+        editUndoStack.clear()
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(14), dp(18), 0)
+        }
+
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            isSmoothScrollingEnabled = true
+        }
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        scroll.addView(content)
+        root.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        val title = TextView(this).apply {
+            text = "CLIENT EDIT — V12.04"
+            textSize = 21f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setPadding(dp(4), dp(8), dp(4), dp(8))
+            maxLines = 2
+            includeFontPadding = true
+        }
+        content.addView(title, matchWrap())
+        addSpace(content, 12)
+
+        content.addView(label("Name"))
+        val nameField = field("Name").apply { setText(editWorkingName) }
+        content.addView(nameField, matchWrap())
+        content.addView(label("Surname"))
+        val surnameFieldEdit = field("Surname").apply { setText(editWorkingSurname) }
+        content.addView(surnameFieldEdit, matchWrap())
+        addSpace(content, 8)
+
+        val phoneContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(phoneContainer, matchWrap())
+
+        var renderingPhones = false
+        fun renderPhones() {
+            renderingPhones = true
+            phoneContainer.removeAllViews()
+            editWorkingPhones.forEachIndexed { index, ep ->
+                val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+                val number = phoneField("Telephone")
+                var initializingNumber = true
+                var numberHistoryRecorded = false
+                var numberBefore = ep.number
+                number.setText(ep.number)
+                number.addTextChangedListener(object : TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) = Unit
+                    override fun onTextChanged(s: CharSequence?, st: Int, before: Int, count: Int) {
+                        if (initializingNumber || renderingPhones) return
+                        val value = s?.toString()?.trim().orEmpty()
+                        if (!numberHistoryRecorded && value != numberBefore) { snapshotEditState(); numberHistoryRecorded = true }
+                        ep.number = value
+                    }
+                    override fun afterTextChanged(e: Editable?) = Unit
+                })
+                number.setOnFocusChangeListener { _, hasFocus ->
+                    if (hasFocus) { numberBefore = ep.number; numberHistoryRecorded = false }
+                    else if (!renderingPhones) ep.number = number.text.toString().trim()
+                    keepFocusedFieldVisible(scroll, number)
+                }
+                initializingNumber = false
+                row.addView(number, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.58f))
+                val labelButton = makeButton(if (ep.label.isBlank()) "New" else ep.label)
+                labelButton.setOnClickListener {
+                    val before = ep.label
+                    choosePhoneLabel(ep.label) { newLabel ->
+                        if (newLabel != before) {
+                            snapshotEditState()
+                            ep.label = newLabel
+                            renderPhones()
+                        }
+                    }
+                }
+                row.addView(labelButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.32f))
+                val delete = Button(this).apply {
+                    text = "🗑"
+                    minWidth = 0
+                    setOnClickListener {
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("DELETE THIS NUMBER?")
+                            .setMessage("Are you sure you want to delete this number?")
+                            .setNegativeButton("NO", null)
+                            .setPositiveButton("YES") { _, _ ->
+                                snapshotEditState()
+                                editWorkingPhones.removeAt(index)
+                                renderPhones()
+                            }.show()
+                    }
+                }
+                row.addView(delete, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.10f))
+                phoneContainer.addView(row, matchWrap())
+                addSpace(phoneContainer, 4)
+            }
+            val add = makeButton("+ NEW NUMBER")
+            add.setOnClickListener {
+                snapshotEditState()
+                editWorkingPhones.add(EditablePhone("", "New"))
+                renderPhones()
+            }
+            phoneContainer.addView(add, matchWrap())
+            renderingPhones = false
+        }
+        renderPhones()
+
+        var initializingName = true
+        var nameHistoryRecorded = false
+        var nameBefore = editWorkingName
+        nameField.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, st: Int, before: Int, count: Int) {
+                if (initializingName) return
+                val now = s?.toString()?.trim().orEmpty()
+                if (!nameHistoryRecorded && now != nameBefore) { snapshotEditState(); nameHistoryRecorded = true }
+                editWorkingName = now
+            }
+            override fun afterTextChanged(e: Editable?) = Unit
+        })
+        nameField.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus) { nameBefore = editWorkingName; nameHistoryRecorded = false }
+            keepFocusedFieldVisible(scroll, nameField)
+        }
+        initializingName = false
+
+        var initializingSurname = true
+        var surnameHistoryRecorded = false
+        var surnameBefore = editWorkingSurname
+        surnameFieldEdit.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, st: Int, before: Int, count: Int) {
+                if (initializingSurname) return
+                val now = s?.toString()?.trim().orEmpty()
+                if (!surnameHistoryRecorded && now != surnameBefore) { snapshotEditState(); surnameHistoryRecorded = true }
+                editWorkingSurname = now
+            }
+            override fun afterTextChanged(e: Editable?) = Unit
+        })
+        surnameFieldEdit.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus) { surnameBefore = editWorkingSurname; surnameHistoryRecorded = false }
+            keepFocusedFieldVisible(scroll, surnameFieldEdit)
+        }
+
+        val undo = makeButton("UNDO").apply {
+            tag = "V12_EDIT_UNDO"
+            isEnabled = false
+            alpha = 0.45f
+            setOnClickListener {
+                if (editUndoStack.isNotEmpty()) {
+                    val state = editUndoStack.removeAt(editUndoStack.lastIndex)
+                    editWorkingName = state.name
+                    editWorkingSurname = state.surname
+                    editWorkingPhones = state.phones.map { EditablePhone(it.number, it.label) }.toMutableList()
+                    nameField.setText(editWorkingName)
+                    surnameFieldEdit.setText(editWorkingSurname)
+                    renderPhones()
+                    updateEditUndoButton()
+                }
+            }
+        }
+        content.addView(undo, matchWrap())
+        updateEditUndoButton()
+
+        // EDIT ACTION BAR: fixed below the scrolling form.
+        val actionRow = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(8), 0, dp(8))
+            minimumHeight = dp(72)
+        }
+        val returnButton = makeButton("RETURN")
+        val cancel = makeButton("CANCEL")
+        val save = makeButton("SAVE")
+        actionRow.addView(returnButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        actionRow.addView(cancel, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        actionRow.addView(save, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(actionRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(72)))
+
+        root.setOnApplyWindowInsetsListener { view, insets ->
+            val navBottom = insets.getInsets(WindowInsets.Type.navigationBars()).bottom
+            view.setPadding(dp(18), dp(14), dp(18), navBottom)
+            insets
+        }
+        root.requestApplyInsets()
+
+        fun restoreEditInitialState() {
+            editWorkingName = editInitialName
+            editWorkingSurname = editInitialSurname
+            editWorkingPhones = editInitialPhones.map { EditablePhone(it.number, it.label) }.toMutableList()
+            if (editWorkingPhones.isEmpty()) editWorkingPhones.add(EditablePhone("", "New"))
+            nameField.setText(editWorkingName)
+            surnameFieldEdit.setText(editWorkingSurname)
+            renderPhones()
+            editUndoStack.clear()
+            updateEditUndoButton()
+        }
+
+        fun editHasUnsavedChanges(): Boolean {
+            val currentPhones = editWorkingPhones.map { EditablePhone(it.number.trim(), it.label.trim().ifBlank { "New" }) }
+            val initialPhones = editInitialPhones.map { EditablePhone(it.number.trim(), it.label.trim().ifBlank { "New" }) }
+            return editWorkingName.trim() != editInitialName.trim() ||
+                editWorkingSurname.trim() != editInitialSurname.trim() || currentPhones != initialPhones
+        }
+
+        // CANCEL = SUPER UNDO. It restores the state from the moment Edit opened and
+    }
+
+    private fun restoreSelectionAfterEdit(contact: PhoneContact) {
+        selectedContact = contact
+        expandedContactId = contact.id
+        contactAreaHidden = false
+        selectedReferenceHidden = false
+        suppressSearchRefresh = true
+        try {
+            val local = clientDb.getClientByPhoneContactId(contact.id.toString())
+            firstNameField.setText(local?.identifyingName ?: contact.givenName.ifBlank { contact.displayName })
+            surnameField.setText(local?.surname ?: contact.familyName)
+            mainPhoneField.setText(local?.mainPhone ?: contact.phones.firstOrNull()?.number.orEmpty())
+            additionalPhoneField.setText(local?.additionalPhone.orEmpty())
+            setAdditionalPhoneLabel(local?.additionalPhoneLabel ?: "Cell phone")
+        } finally { suppressSearchRefresh = false }
+        listToggleButton.visibility = View.VISIBLE
+        clearButton.visibility = View.VISIBLE
+        undoButton.visibility = View.GONE
+        setExistingClientCaptureMode(true)
+        renderSelectedOnlyResult()
+    }
+
+    private fun setExistingClientCaptureMode(existingClientSelected: Boolean) {
+        // Existing-client phone maintenance belongs in the client card EDIT screen.
+        // RETRIEVE LIST remains available whenever matching contacts exist.
+        // CLEAR remains available while a matching list or selected client is present.
+        capturePhoneSection.visibility = if (existingClientSelected) View.GONE else View.VISIBLE
+        captureSaveButton.visibility = if (existingClientSelected) View.GONE else View.VISIBLE
+        listToggleButton.visibility = if (cachedContactMatches.isNotEmpty()) View.VISIBLE else View.GONE
+    }
+
+    private fun selectContact(contact: PhoneContact) {
+        cachedContactMatches = cachedContactMatches.ifEmpty {
+            allContacts.filter { it.id == contact.id }
+        }
+        selectedContact = contact
+        expandedContactId = contact.id
+        selectedReferenceHidden = false
+        contactReferenceToggleButton.visibility = View.GONE
+        suppressSearchRefresh = true
+        try {
+            firstNameField.setText(contact.displayName)
+            surnameField.setText(contact.familyName)
+            val local = clientDb.getClientByPhoneContactId(contact.id.toString())
+            if (local != null) {
+                firstNameField.setText(local.identifyingName)
+                surnameField.setText(local.surname.ifBlank { contact.familyName })
+                mainPhoneField.setText(local.mainPhone)
+                additionalPhoneField.setText(local.additionalPhone)
+                setAdditionalPhoneLabel(local.additionalPhoneLabel)
+                setMainPhoneEditable(local.mainPhoneSource != "GOOGLE")
+            } else {
+                mainPhoneField.setText(contact.phones.firstOrNull()?.number.orEmpty())
+                additionalPhoneField.setText("")
+                setAdditionalPhoneLabelIndex(0)
+                setMainPhoneEditable(false)
+            }
+        } finally { suppressSearchRefresh = false }
+        contactAreaHidden = false
+        listToggleButton.text = "RETRIEVE LIST"
+        clearButton.visibility = View.VISIBLE
+        undoButton.visibility = View.GONE
+        undoSnapshot = null
+        setExistingClientCaptureMode(true)
+        renderSelectedOnlyResult()
+        // Compare the freshly retrieved Android/Google contact against the B&S record.
+        // External changes are never imported silently.
+        window.decorView.post { detectExternalPhoneChanges(contact) }
+    }
+
+    private fun unselectContactAndRestoreResults() {
+        // Deselect only. Never erase information the user has already captured.
+        selectedContact = null
+        expandedContactId = null
+        selectedReferenceHidden = false
+        contactReferenceToggleButton.visibility = View.GONE
+        contactAreaHidden = false
+        listToggleButton.text = "HIDE LIST"
+        listToggleButton.visibility = if (cachedContactMatches.isNotEmpty()) View.VISIBLE else View.GONE
+        clearButton.visibility = if (cachedContactMatches.isNotEmpty()) View.VISIBLE else View.GONE
+        resultsContainer.removeAllViews()
+        if (cachedContactMatches.isNotEmpty()) {
+            resultsScroll.visibility = View.VISIBLE
+            matchingContactsLabel.visibility = View.VISIBLE
+            cachedContactMatches.forEach { addContactRow(it, false) }
+        } else {
+            resultsScroll.visibility = View.GONE
+            matchingContactsLabel.visibility = View.GONE
+        }
+    }
+
+    private fun clearSelectedContact() {
+        val hasCaptureData = firstNameField.text.toString().isNotBlank() || surnameField.text.toString().isNotBlank() ||
+            mainPhoneField.text.toString().isNotBlank() || additionalPhoneField.text.toString().isNotBlank() ||
+            captureAdditionalPhones.isNotEmpty() || selectedContact != null
+        if (!hasCaptureData) {
+            clearCaptureDraft()
+            showStatus("Capture is already clear.")
+            return
+        }
+        val selectedId = selectedContact?.id ?: -1L
+        undoSnapshot = CaptureSnapshot(
+            identifyingName = firstNameField.text.toString(),
+            surname = surnameField.text.toString(),
+            mainPhone = mainPhoneField.text.toString(),
+            additionalPhone = additionalPhoneField.text.toString(),
+            whatsapp = "",
+            additionalPhoneLabelIndex = additionalPhoneLabelSpinner.selectedItemPosition,
+            customAdditionalPhoneLabel = customAdditionalPhoneLabel,
+            selectedContactId = selectedId,
+            expandedContactId = expandedContactId,
+            contactAreaHidden = contactAreaHidden,
+            selectedReferenceHidden = selectedReferenceHidden,
+            additionalPhones = captureAdditionalPhones.map { EditablePhone(it.number, it.label) }
+        )
+        suppressSearchRefresh = true
+        try {
+            selectedContact = null
+            expandedContactId = null
+            selectedReferenceHidden = false
+            contactReferenceToggleButton.visibility = View.GONE
+            contactAreaHidden = false
+            firstNameField.setText("")
+            surnameField.setText("")
+            mainPhoneField.setText("")
+            customMainPhoneLabel = ""
+            mainPhoneLabelButton.text = "New"
+            setMainPhoneEditable(true)
+            additionalPhoneField.setText("")
+            captureAdditionalPhones.clear()
+            customAdditionalPhoneLabel = ""
+            setAdditionalPhoneLabelIndex(0)
+        } finally { suppressSearchRefresh = false }
+        resultsContainer.removeAllViews()
+        resultsScroll.visibility = View.GONE
+        matchingContactsLabel.visibility = View.GONE
+        listToggleButton.visibility = View.GONE
+        clearButton.visibility = View.GONE
+        undoButton.visibility = View.VISIBLE
+        // CLEAR starts a genuinely clean/new capture state; restore the phone
+        // fields and SAVE / UPDATE controls so unmatched names cannot strand
+        // the user without a way to continue.
+        setExistingClientCaptureMode(false)
+        undoButton.requestFocus()
+    }
+
+    private fun undoClear() {
+        val snapshot = undoSnapshot ?: return
+        val restoredContact = allContacts.firstOrNull { it.id == snapshot.selectedContactId }
+        suppressSearchRefresh = true
+        try {
+            customAdditionalPhoneLabel = snapshot.customAdditionalPhoneLabel
+            additionalPhoneLabelSpinner.adapter = buildAdditionalPhoneLabelAdapter()
+            firstNameField.setText(snapshot.identifyingName)
+            surnameField.setText(snapshot.surname)
+            mainPhoneField.setText(snapshot.mainPhone)
+            additionalPhoneField.setText(snapshot.additionalPhone)
+            captureAdditionalPhones.clear()
+            captureAdditionalPhones.addAll(snapshot.additionalPhones.map { EditablePhone(it.number, it.label) })
+            setAdditionalPhoneLabelIndex(snapshot.additionalPhoneLabelIndex)
+            selectedContact = restoredContact
+            expandedContactId = restoredContact?.let { snapshot.expandedContactId ?: it.id }
+            contactAreaHidden = snapshot.contactAreaHidden
+            selectedReferenceHidden = snapshot.selectedReferenceHidden
+            setMainPhoneEditable(restoredContact == null || snapshot.mainPhone.isBlank() || clientDb.getClientByPhoneContactId(restoredContact.id.toString())?.mainPhoneSource != "GOOGLE")
+        } finally { suppressSearchRefresh = false }
+        clearButton.visibility = View.VISIBLE
+        undoButton.visibility = View.GONE
+        undoSnapshot = null
+        listToggleButton.visibility = if (restoredContact != null) View.VISIBLE else View.GONE
+        listToggleButton.text = "RETRIEVE LIST"
+        if (restoredContact == null) {
+            resultsContainer.removeAllViews()
+            resultsScroll.visibility = View.GONE
+            matchingContactsLabel.visibility = View.GONE
+        } else if (selectedReferenceHidden || contactAreaHidden) {
+            resultsScroll.visibility = View.GONE
+            matchingContactsLabel.visibility = View.GONE
+        } else {
+            renderSelectedOnlyResult()
+        }
+    }
+
+    private fun onSaveInstanceStateCompat(outState: Bundle) {
+        outState.putString("capture_identifying_name", firstNameField.text.toString())
+        outState.putString("capture_surname", surnameField.text.toString())
+        outState.putString("capture_main_phone", mainPhoneField.text.toString())
+        outState.putString("capture_additional_phone", additionalPhoneField.text.toString())
+        outState.putInt("capture_additional_phone_label", additionalPhoneLabelSpinner.selectedItemPosition)
+        outState.putString("capture_custom_additional_phone_label", customAdditionalPhoneLabel)
+        outState.putLong("capture_selected_contact_id", selectedContact?.id ?: -1L)
+        outState.putLong("capture_expanded_contact_id", expandedContactId ?: -1L)
+        outState.putBoolean("capture_contact_area_hidden", contactAreaHidden)
+        outState.putBoolean("capture_selected_reference_hidden", selectedReferenceHidden)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        onSaveInstanceStateCompat(outState)
+        super.onSaveInstanceState(outState)
+    }
+
+    private fun restoreInstanceState(state: Bundle?) {
+        if (state == null) return
+        suppressSearchRefresh = true
+        try {
+            firstNameField.setText(state.getString("capture_identifying_name", ""))
+            surnameField.setText(state.getString("capture_surname", ""))
+            mainPhoneField.setText(state.getString("capture_main_phone", ""))
+            additionalPhoneField.setText(state.getString("capture_additional_phone", ""))
+            customAdditionalPhoneLabel = state.getString("capture_custom_additional_phone_label", "")
+            additionalPhoneLabelSpinner.adapter = buildAdditionalPhoneLabelAdapter()
+            setAdditionalPhoneLabelIndex(state.getInt("capture_additional_phone_label", 0))
+            contactAreaHidden = state.getBoolean("capture_contact_area_hidden", false)
+            selectedReferenceHidden = state.getBoolean("capture_selected_reference_hidden", false)
+            expandedContactId = state.getLong("capture_expanded_contact_id", -1L).takeIf { it >= 0L }
+            pendingSelectedContactId = state.getLong("capture_selected_contact_id", -1L).takeIf { it >= 0L }
+            listToggleButton.text = if (pendingSelectedContactId != null || contactAreaHidden) "RETRIEVE LIST" else "HIDE LIST"
+            listToggleButton.visibility = if (pendingSelectedContactId != null || contactAreaHidden) View.VISIBLE else View.GONE
+            contactReferenceToggleButton.visibility = if (pendingSelectedContactId != null && selectedReferenceHidden) View.VISIBLE else View.GONE
+        } finally { suppressSearchRefresh = false }
+    }
+
+    private fun loadExistingClient(client: ClientRecord) {
+        suppressSearchRefresh = true
+        try {
+            firstNameField.setText(client.identifyingName)
+            surnameField.setText(client.surname)
+            mainPhoneField.setText(client.mainPhone)
+            additionalPhoneField.setText(client.additionalPhone)
+            setAdditionalPhoneLabel(client.additionalPhoneLabel)
+            setMainPhoneEditable(client.mainPhoneSource != "GOOGLE")
+        } finally {
+            suppressSearchRefresh = false
+        }
+        showStatus("Existing client loaded. Review or edit the information before saving.")
+    }
+
+    private fun updateExistingClient(clientId: Long) {
+        val updated = clientDb.updateClientById(
+            clientId,
+            firstNameField.text.toString().trim(),
+            surnameField.text.toString().trim(),
+            mainPhoneField.text.toString().trim(),
+            additionalPhoneField.text.toString().trim(),
+            additionalPhoneLabelSpinner.selectedItem?.toString().orEmpty(),
+            ""
+        )
+        showStatus(if (updated) "Existing client updated locally." else "ERROR — Existing client could not be updated.")
+    }
+
+    private fun saveOrUpdate() {
+        val identifyingName = firstNameField.text.toString().trim()
+        val surname = surnameField.text.toString().trim()
+        val mainPhone = mainPhoneField.text.toString().trim()
+        val additionalPhone = additionalPhoneField.text.toString().trim()
+        val additionalPhoneLabel = additionalPhoneLabelSpinner.selectedItem?.toString().orEmpty()
+        val mainPhoneLabel = mainPhoneLabelButton.text.toString().ifBlank { "New" }
+        val whatsapp = ""
+
+        if (identifyingName.isBlank()) {
